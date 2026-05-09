@@ -1,141 +1,134 @@
-# Technical Design Note — AttendX Attendance Management
+# AttendX — Attendance Management System
 
-## Architecture Overview
+A production-grade Attendance Management module with Employee, HR, and Admin roles. Built with React, Node.js/Express, and MySQL.
 
-The system follows a **Layered Monolithic Architecture** with clear separation of concerns, designed for maintainability and future scalability.
+## 🛠️ Tech Stack
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   React Frontend                     │
-│  (Vite + React Router + Context API + Axios)         │
-├─────────────────────────────────────────────────────┤
-│                      REST API                        │
-│              (JSON over HTTP + JWT)                   │
-├─────────────────────────────────────────────────────┤
-│  Routes → Middleware → Controllers → Services        │
-│     (Express.js Application Layer)                    │
-├─────────────────────────────────────────────────────┤
-│              Sequelize ORM Models                     │
-│          (Data Access Layer)                          │
-├─────────────────────────────────────────────────────┤
-│               MySQL 8.0 Database                      │
-│              (Docker Container)                       │
-└─────────────────────────────────────────────────────┘
-```
-
-## Design Decisions & Rationale
-
-### 1. Layered Backend (Routes → Controllers → Services → Models)
-
-**Why:** Each layer has a single responsibility:
-- **Routes** define endpoints and attach middleware
-- **Controllers** handle HTTP concerns (req/res)
-- **Services** contain all business logic (testable, reusable)
-- **Models** define data structure and relationships
-
-**Benefit:** A new developer can find and modify business logic (e.g., "how does clock-in work?") by looking at exactly one file: `attendance.service.js`.
-
-### 2. Sequelize ORM (not raw SQL)
-
-**Why:** Sequelize provides:
-- Type-safe model definitions with validations
-- Automatic table creation and migration
-- Association management (foreign keys, eager loading)
-- Protection against SQL injection (parameterized queries)
-- Database-agnostic code (easy to switch to PostgreSQL)
-
-### 3. JWT for Authentication (not sessions)
-
-**Why:** Stateless authentication that:
-- Doesn't require server-side session storage
-- Works seamlessly with SPAs (React)
-- Scales horizontally (any server can verify the token)
-- Carries role information in the payload for quick RBAC checks
-
-### 4. Audit Logging as a Dedicated Model
-
-**Why:** Every business action creates an immutable audit trail entry. This is critical for:
-- Compliance requirements in HR software
-- Debugging production issues
-- Admin oversight of system usage
-- Future reporting and analytics
-
-### 5. Single-Row AttendanceRules Table
-
-**Why:** Currently serves as a global config. Designed to easily extend to per-company rules by adding a `company_id` foreign key for multi-tenant support.
-
-## Key Business Rules (Enforced Server-Side)
-
-| Rule | Implementation |
+| Layer | Technology |
 |---|---|
-| One clock-in per day | `UNIQUE(user_id, date)` DB constraint + service check |
-| Clock-out requires clock-in | Service validates `clock_in` exists before allowing clock-out |
-| No double clock-out | Service checks `clock_out` is null |
-| No duplicate pending corrections | Service checks for existing `pending` request for same user + date |
-| Role-based access | JWT middleware + RBAC middleware on every protected route |
-| Soft delete (not hard delete) | `is_active` flag — deactivated users can't login but data preserved |
-| Auto hour calculation | `total_hours = (clock_out - clock_in)` computed on clock-out |
-| **Rules-driven status** | `status` determined by `AttendanceRules.min_hours_half_day` (not hard-coded) |
-| **Punctuality tracking** | `is_late` computed at clock-in using `default_shift_start + grace_period_minutes` from rules |
-| Correction approval updates attendance | Service auto-creates/updates attendance record on approval |
+| Frontend | React 18 + Vite |
+| Backend | Node.js + Express.js |
+| Database | MySQL 8.0 (Sequelize ORM) |
+| Auth | JWT + bcrypt |
+| Styling | Vanilla CSS (Dark Glassmorphism) |
+| Infrastructure | Docker Compose |
 
-## Database Design Notes
+## 📁 Project Structure
 
-### Normalization
-- **3NF compliant**: No transitive dependencies, all data in its canonical location
-- Roles are a separate table (not an ENUM on users) for future extensibility
-- Correction requests reference both the user and the attendance record
+```
+├── docker-compose.yml          # MySQL + phpMyAdmin containers
+├── Backend/
+│   ├── server.js               # Express entry point
+│   ├── .env                    # Environment variables
+│   └── src/
+│       ├── config/             # DB & app configuration
+│       ├── middleware/         # Auth, RBAC, validation, error handling
+│       ├── models/            # Sequelize models (6 tables)
+│       ├── routes/            # API route definitions
+│       ├── controllers/       # Request handlers
+│       ├── services/          # Business logic layer
+│       ├── validators/        # Joi validation schemas
+│       └── seeders/           # Database seed script
+├── Frontend/
+│   └── src/
+│       ├── api/               # Axios instance with JWT interceptor
+│       ├── context/           # Auth state management
+│       ├── layouts/           # Dashboard layout wrapper
+│       ├── pages/             # Employee, HR, Admin pages
+│       ├── components/        # Sidebar, Header, shared UI
+│       └── utils/             # Constants & helpers
+```
 
-### Indexes
-- `UNIQUE(user_id, date)` on attendance_records — prevents duplicates and speeds date lookups
-- Foreign key indexes auto-created by Sequelize
-- Audit logs ordered by `created_at DESC` for efficient recent-first queries
+## 🚀 Quick Start
 
-### Data Integrity
-- Foreign keys enforce referential integrity
-- `NOT NULL` constraints on required fields
-- ENUM types for status fields (prevents invalid values)
-- JSON columns for audit log change snapshots (flexible schema)
+### Prerequisites
+- **Node.js** ≥ 18
+- **Docker Desktop** (for MySQL)
 
-## API Design Philosophy
+### 1. Start Database
 
-- **RESTful conventions**: Resources as nouns, HTTP verbs for actions
-- **Consistent response format**: `{ success, message, data }`
-- **Appropriate HTTP status codes**: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 409 Conflict, 500 Internal
-- **Pagination**: `{ records, total, page, totalPages }` on all list endpoints
-- **Input validation**: Joi schemas reject invalid data before reaching business logic
-- **Error handling**: Centralized error middleware catches all errors, formats consistent responses
+```bash
+# From the project root
+docker-compose up -d
+```
 
-## Security Considerations
+This starts:
+- MySQL 8.0 on port **3306**
+- phpMyAdmin on port **8080** (http://localhost:8080)
 
-1. **Passwords**: bcrypt with 12 salt rounds (intentionally slow to resist brute-force)
-2. **JWT Secret**: Stored in environment variables, never in code
-3. **Helmet**: Sets security headers (CSP, X-Content-Type-Options, etc.)
-4. **Rate Limiting**: 100 requests per 15-minute window per IP
-5. **CORS**: Explicitly configured for frontend origin only
-6. **SQL Injection**: Prevented by Sequelize's parameterized queries
-7. **Stack Traces**: Hidden in production mode (only generic error messages)
+### 2. Backend Setup
 
-## Future Extensibility
+```bash
+cd Backend
+npm install
+npm run seed    # Creates tables + seed data
+npm run dev     # Starts on http://localhost:5000
+```
 
-This architecture is designed to grow into a commercial multi-company HR product. The codebase contains explicit `MULTI_TENANT_HOOK` comments at every extension point:
+### 3. Frontend Setup
 
-| Extension | How to Implement | Hook Location |
+```bash
+cd Frontend
+npm install
+npm run dev     # Starts on http://localhost:5173
+```
+
+### 4. Open the App
+
+Navigate to **http://localhost:5173** and use the quick-login buttons or credentials below.
+
+## 🔑 Sample Credentials
+
+| Role | Email | Password |
 |---|---|---|
-| Multi-tenant | Add `company_id` FK to Users, Rules, Records | `User.js`, `AttendanceRule.js`, `AttendanceRecord.js` |
-| Per-company rules | `company_id` already planned on `AttendanceRule` | `AttendanceRule.js` comment |
-| Leave Management | New LeaveRequest model + service | New module |
-| Shift Management | `shift_type` field already on `User` model | `User.js` — link to future `shifts` table |
-| Geolocation Check | Add lat/lng to clock-in/out, validate against office location | `AttendanceRecord.js` |
-| Biometric Integration | Clock-in via API from biometric device | `attendance.routes.js` |
-| Reports & Analytics | Add reporting service, aggregate queries on attendance + `is_late` data | New service |
-| Notifications | Add email/SMS service triggered by audit events | `audit.service.js` |
-| Mobile App | Same REST API, new React Native frontend | No backend change |
+| **Admin** | admin@optronix.com | Admin@123 |
+| **HR** | hr@optronix.com | Hr@123 |
+| **Employee** | emp1@optronix.com | Emp@123 |
+| **Employee** | emp2@optronix.com | Emp@123 |
+| **Employee** | emp3@optronix.com | Emp@123 |
 
-## Assumptions
+## 📋 Features by Role
 
-1. Single timezone operation (server timezone)
-2. One company instance (single-tenant)
-3. Manual clock-in/out (no biometric/geofencing for now)
-4. Simple role hierarchy (no custom permission matrices)
-5. Local development environment (Docker for MySQL)
+### Employee
+- ⏰ Clock In / Clock Out with live time widget
+- 📋 View attendance history (paginated)
+- ✏️ Raise correction requests (missed/wrong in-time or out-time)
+- 📊 Track correction request status
+
+### HR
+- ✅ Review all correction requests (approve/reject with remarks)
+- 📋 View all employee attendance records
+- 📊 Dashboard with pending request stats
+
+### Admin
+- 👥 Create, edit, activate/deactivate users
+- ⚙️ Configure attendance rules (shift timings, grace period, hour thresholds)
+- 📋 Full visibility into all attendance records and corrections
+- 📜 View complete audit log trail
+- 🔐 Role assignment
+
+## 🗄️ Database Schema
+
+| Table | Description |
+|---|---|
+| `roles` | Role definitions (admin, hr, employee) |
+| `users` | All system users with role FK |
+| `attendance_records` | Daily clock-in/out with hours calculation |
+| `correction_requests` | Correction workflow (pending → approved/rejected) |
+| `attendance_rules` | Global attendance configuration |
+| `audit_logs` | Immutable action trail |
+
+## 🔒 Security Features
+
+- JWT token authentication
+- bcrypt password hashing (12 rounds)
+- Role-based access control (RBAC) on every endpoint
+- Helmet security headers
+- Rate limiting (100 req/15 min)
+- CORS configured for frontend origin
+- Input validation on all endpoints (Joi)
+- Centralized error handling (no stack trace leaks in production)
+
+## 📖 API Endpoints
+
+See [TECHNICAL_DESIGN.md](./TECHNICAL_DESIGN.md) for full API documentation and architecture decisions.
